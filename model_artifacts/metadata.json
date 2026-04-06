@@ -1,0 +1,126 @@
+{
+  "best_model_name": "Gradient Boosting",
+  "features": [
+    "price",
+    "cost_price",
+    "competitor_price",
+    "price_diff",
+    "price_ratio",
+    "discount_pct",
+    "is_discount",
+    "category_enc",
+    "size_enc",
+    "price_tier_enc",
+    "day_of_week",
+    "month",
+    "week_of_year",
+    "quarter",
+    "is_weekend",
+    "is_festive_season",
+    "region_tier",
+    "profit_margin_pct"
+  ],
+  "target": "quantity",
+  "model_performance": {
+    "Random Forest": {
+      "MAE": 0.59656,
+      "RMSE": 0.833708,
+      "R2": 0.966942,
+      "MAPE": 12.215846
+    },
+    "Gradient Boosting": {
+      "MAE": 0.510662,
+      "RMSE": 0.687291,
+      "R2": 0.977534,
+      "MAPE": 10.706399
+    },
+    "XGBoost": {
+      "MAE": 0.510894,
+      "RMSE": 0.689417,
+      "R2": 0.977395,
+      "MAPE": 10.643441
+    }
+  },
+  "categories": [
+    "Kurta",
+    "Set",
+    "Top",
+    "Western Dress",
+    "Skirt",
+    "Ethnic Dress",
+    "Blouse"
+  ],
+  "sizes": [
+    "XL",
+    "M",
+    "L",
+    "XXXL",
+    "S",
+    "XXL",
+    "XS"
+  ],
+  "regions": [
+    "GUJARAT",
+    "DELHI",
+    "UTTAR PRADESH",
+    "TELANGANA",
+    "MAHARASHTRA",
+    "JAMMU AND KASHMIR",
+    "TAMIL NADU",
+    "RAJASTHAN",
+    "NAGALAND",
+    "WEST BENGAL",
+    "KERALA",
+    "GOA",
+    "KARNATAKA",
+    "MADHYA PRADESH",
+    "ANDHRA PRADESH",
+    "JHARKHAND",
+    "ODISHA",
+    "LAKSHADWEEP",
+    "MIZORAM",
+    "LADAKH",
+    "CHANDIGARH",
+    "BIHAR",
+    "HARYANA",
+    "PUNJAB",
+    "PUDUCHERRY",
+    "UTTARAKHAND",
+    "ARUNACHAL PRADESH",
+    "TRIPURA",
+    "MEGHALAYA",
+    "ASSAM",
+    "CHHATTISGARH",
+    "DAMAN AND DIU",
+    "HIMACHAL PRADESH",
+    "MANIPUR",
+    "ANDAMAN AND NICOBAR",
+    "DADRA AND NAGAR HAVELI",
+    "SIKKIM"
+  ],
+  "price_range": {
+    "min": 199.0,
+    "max": 2598.0
+  },
+  "region_tiers": {
+    "metro": [
+      "MAHARASHTRA",
+      "DELHI",
+      "KARNATAKA",
+      "TAMIL NADU",
+      "TELANGANA",
+      "WEST BENGAL"
+    ],
+    "tier1": [
+      "UTTAR PRADESH",
+      "GUJARAT",
+      "RAJASTHAN",
+      "ANDHRA PRADESH",
+      "HARYANA",
+      "KERALA",
+      "MADHYA PRADESH",
+      "PUNJAB"
+    ],
+    "tier2_3": "all others"
+  }
+}

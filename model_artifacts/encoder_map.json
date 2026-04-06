@@ -1,0 +1,25 @@
+{
+  "category": {
+    "Blouse": 0,
+    "Ethnic Dress": 1,
+    "Kurta": 2,
+    "Set": 3,
+    "Skirt": 4,
+    "Top": 5,
+    "Western Dress": 6
+  },
+  "size": {
+    "L": 0,
+    "M": 1,
+    "S": 2,
+    "XL": 3,
+    "XS": 4,
+    "XXL": 5,
+    "XXXL": 6
+  },
+  "price_tier": {
+    "Budget": 0,
+    "Mid-range": 1,
+    "Premium": 2
+  }
+}
