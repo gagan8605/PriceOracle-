@@ -281,31 +281,43 @@ def encode_features(category, size, price, cost_price, competitor_price,
 
 def predict_demand(features_dict):
     """Predict demand using the ML model."""
+    return float(predict_demand_batch(pd.DataFrame([features_dict]))[0])
+
+def predict_demand_batch(features_input):
+    """Vectorized demand prediction for one or many feature rows."""
+    if isinstance(features_input, pd.DataFrame):
+        X = features_input.copy()
+    else:
+        X = pd.DataFrame(features_input)
+
+    X = X[FEATURES]
+
     if model is None:
-        # Demo mode: deterministic price-elasticity simulation with richer signals.
-        p   = features_dict['price']
-        cp  = features_dict.get('competitor_price', p)
-        disc = features_dict.get('discount_pct', 0) / 100.0
-        region_tier = features_dict.get('region_tier', 1)
-        category_enc = features_dict.get('category_enc', 2)
-        month = features_dict.get('month', 6)
+        p = X['price'].to_numpy(dtype=float)
+        cp = X['competitor_price'].to_numpy(dtype=float)
+        disc = X['discount_pct'].to_numpy(dtype=float) / 100.0
+        region_tier = X['region_tier'].to_numpy(dtype=float)
+        category_enc = X['category_enc'].to_numpy(dtype=float)
+        month = X['month'].to_numpy(dtype=int)
+        festive = X['is_festive_season'].to_numpy(dtype=int)
 
         ref = 599.0
         elas = 1.3
-        base = 7
-        fest = 1.15 if features_dict.get('is_festive_season', 0) else 1.0
-        discount_boost = 1.0 + min(max(disc, 0), 0.50) * 0.7
-        comp_factor = (max(cp, 1) / max(p, 1)) ** 0.35
-        region_factor = 1.0 + (region_tier - 1) * 0.04
-        category_factor = 1.0 + (category_enc - 3) * 0.015
-        season_factor = 1.06 if month in [10, 11, 12] else 0.98 if month in [4, 5, 6] else 1.0
+        base = 7.0
+        fest = np.where(festive > 0, 1.15, 1.0)
+        discount_boost = 1.0 + np.clip(disc, 0, 0.50) * 0.7
+        comp_factor = (np.maximum(cp, 1.0) / np.maximum(p, 1.0)) ** 0.35
+        region_factor = 1.0 + (region_tier - 1.0) * 0.04
+        category_factor = 1.0 + (category_enc - 3.0) * 0.015
+        season_factor = np.where(np.isin(month, [10, 11, 12]), 1.06,
+                                 np.where(np.isin(month, [4, 5, 6]), 0.98, 1.0))
 
-        q = base * (ref / max(p, 1)) ** elas
-        q *= fest * discount_boost * comp_factor * region_factor * category_factor * season_factor
-        return float(np.clip(q, 1, 20))
+        q = base * (ref / np.maximum(p, 1.0)) ** elas
+        q = q * fest * discount_boost * comp_factor * region_factor * category_factor * season_factor
+        return np.clip(q, 1, 20)
 
-    X = pd.DataFrame([features_dict])[FEATURES]
-    return float(np.clip(model.predict(X)[0], 1, 20))
+    preds = model.predict(X)
+    return np.clip(preds, 1, 20)
 
 def run_optimizer(base_features, cost_price, current_price,
                   floor_pct=0.70, ceil_pct=1.35, n=60):
@@ -314,20 +326,19 @@ def run_optimizer(base_features, cost_price, current_price,
     ceil  = current_price * ceil_pct
     prices = np.linspace(floor, ceil, n)
 
-    profits, demands = [], []
-    for p in prices:
-        f = base_features.copy()
-        f['price']             = p
-        f['price_diff']        = p - f['competitor_price']
-        f['price_ratio']       = p / max(f['competitor_price'], 1)
-        f['profit_margin_pct'] = (p - cost_price) / p * 100 if p > 0 else 0
-        tier = 'Budget' if p < 400 else ('Mid-range' if p < 800 else 'Premium')
-        f['price_tier_enc'] = TIER_ENC.get(tier, 1)
-        d = predict_demand(f)
-        demands.append(d)
-        profits.append((p - cost_price) * d)
+    sim_df = pd.DataFrame([base_features] * len(prices))
+    sim_df['price'] = prices
+    sim_df['price_diff'] = sim_df['price'] - sim_df['competitor_price']
+    sim_df['price_ratio'] = sim_df['price'] / np.maximum(sim_df['competitor_price'], 1)
+    sim_df['profit_margin_pct'] = (sim_df['price'] - cost_price) / np.maximum(sim_df['price'], 1) * 100
+    sim_df['price_tier_enc'] = np.where(
+        sim_df['price'] < 400,
+        TIER_ENC['Budget'],
+        np.where(sim_df['price'] < 800, TIER_ENC['Mid-range'], TIER_ENC['Premium'])
+    )
 
-    profits_arr = np.array(profits)
+    demands_arr = predict_demand_batch(sim_df)
+    profits_arr = (prices - cost_price) * demands_arr
     best_idx    = int(np.argmax(profits_arr))
 
     # Current metrics
@@ -340,12 +351,12 @@ def run_optimizer(base_features, cost_price, current_price,
         'optimal_price':   round(float(prices[best_idx]), 2),
         'max_profit':      round(float(profits_arr[best_idx]), 2),
         'current_demand':  round(curr_d, 1),
-        'optimal_demand':  round(float(demands[best_idx]), 1),
+        'optimal_demand':  round(float(demands_arr[best_idx]), 1),
         'current_profit':  round(float(curr_p), 2),
         'improvement_pct': round(float(improvement), 1),
         'price_range':     prices.tolist(),
         'profit_curve':    profits_arr.tolist(),
-        'demand_curve':    demands,
+        'demand_curve':    demands_arr.tolist(),
     }
 
 # ─────────────────────────────────────────────────────────
@@ -616,8 +627,6 @@ with st.sidebar:
     if "groq_connected" not in st.session_state:
         st.session_state.groq_connected = bool(env_groq_key)
     selected_key = env_groq_key
-    masked = f"{env_groq_key[:6]}...{env_groq_key[-4:]}" if len(env_groq_key) >= 12 else "Not found"
-    st.caption(f"Environment key: {masked}")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -639,9 +648,6 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-    if not env_groq_key:
-        st.caption("Create .env with: GROQ_API_KEY=gsk_your_key_here")
-
     st.markdown("---")
     st.markdown("<div style='font-size:0.75rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:0.6rem;'>⚙️ Optimizer Settings</div>", unsafe_allow_html=True)
     price_floor = st.slider("Price Floor (% of current)", 50, 90, 70,
@@ -660,29 +666,22 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    st.markdown("""
-    <div style='font-size:0.72rem; color:#484f58; line-height:1.5;'>
-    PriceOracle v1.0<br>
-    AI Dynamic Pricing Intelligence<br>
-    Built for Amazon India Fashion Retail
-    </div>
-    """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────
 # MAIN HEADER
 # ─────────────────────────────────────────────────────────
 st.markdown("""
 <div class='main-header'>
-  <div class='app-title'>🔮 PriceOracle</div>
-  <div class='app-subtitle'>AI Dynamic Pricing & Profit Intelligence Platform</div>
+    <div class='app-title'>PriceOracle</div>
+    <div class='app-subtitle'>Dynamic Pricing and Profit Intelligence</div>
 </div>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────
-tab_optimize, tab_scenario, tab_batch, tab_about = st.tabs([
-    "⭐ Price Optimizer", "🔬 Scenario Lab", "📦 Batch Analysis", "ℹ️ About"
+tab_optimize, tab_ai, tab_scenario, tab_batch, tab_about = st.tabs([
+    "Price Optimizer", "AI Insights", "Scenario Lab", "Batch Analysis", "About"
 ])
 
 # ══════════════════════════════════════════════════════════
@@ -694,14 +693,14 @@ with tab_optimize:
 
     # ── INPUT PANEL ──────────────────────────────────────
     with col_input:
-        st.markdown("<div class='section-header'>📥 Product Inputs</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-header'>Product Inputs</div>", unsafe_allow_html=True)
 
         category = st.selectbox("Category", CATEGORIES, index=0)
         size     = st.selectbox("Size", SIZES, index=3)
         region   = st.selectbox("Region", REGIONS, index=0)
         sel_date = st.date_input("Date", value=date(2022, 10, 15))
 
-        st.markdown("<div class='section-header' style='margin-top:1rem;'>💰 Pricing Inputs</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-header' style='margin-top:1rem;'>Pricing Inputs</div>", unsafe_allow_html=True)
 
         current_price     = st.number_input("Your Price (₹)", min_value=100.0, max_value=5000.0,
                                             value=799.0, step=50.0)
@@ -721,7 +720,7 @@ with tab_optimize:
             st.markdown(f"<div class='success-box'>✅ Gross margin: {margin:.1f}%</div>",
                         unsafe_allow_html=True)
 
-        run_btn = st.button("🔮 Optimise Price", use_container_width=True, type="primary")
+        run_btn = st.button("Optimise Price", use_container_width=True, type="primary")
 
     # ── RESULTS ──────────────────────────────────────────
     with col_results:
@@ -734,8 +733,7 @@ with tab_optimize:
         opt_signature = (
             category, size, region, str(sel_date),
             float(current_price), float(cost_price_input), float(competitor_price),
-            float(discount_pct), int(is_discount), int(price_floor), int(price_ceil), int(n_simulations),
-            bool(groq_key)
+            float(discount_pct), int(is_discount), int(price_floor), int(price_ceil), int(n_simulations)
         )
 
         if run_btn or 'optimizer_state' not in st.session_state:
@@ -751,25 +749,21 @@ with tab_optimize:
                 'sel_date': sel_date, 'is_festive': bool(is_festive)
             }
 
-            with st.spinner("Generating recommendation..."):
-                ai_text = get_ai_recommendation(ai_inputs, result, groq_key)
-
             st.session_state['optimizer_state'] = {
                 'signature': opt_signature,
                 'result': result,
-                'ai_text': ai_text
+                'ai_inputs': ai_inputs
             }
 
         optimizer_state = st.session_state.get('optimizer_state')
         if optimizer_state:
             result = optimizer_state['result']
-            ai_text = optimizer_state['ai_text']
 
             if optimizer_state.get('signature') != opt_signature:
                 st.info("Inputs changed. Click 'Optimise Price' to refresh results.")
 
             # ── Section 3: Baseline Metrics ──────────────
-            st.markdown("<div class='section-header'>📊 Baseline Metrics</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-header'>Baseline Metrics</div>", unsafe_allow_html=True)
             mc1, mc2, mc3, mc4 = st.columns(4)
 
             with mc1:
@@ -806,7 +800,7 @@ with tab_optimize:
                 </div>""", unsafe_allow_html=True)
 
             # ── Section 4: Optimal Price Banner ──────────
-            st.markdown("<div class='section-header' style='margin-top:1.2rem;'>⭐ Optimisation Result</div>",
+            st.markdown("<div class='section-header' style='margin-top:1.2rem;'>Optimisation Result</div>",
                         unsafe_allow_html=True)
 
             imp_color = "green" if result['improvement_pct'] >= 0 else "red"
@@ -838,69 +832,118 @@ with tab_optimize:
                 </div>""", unsafe_allow_html=True)
 
             # ── Section 5: Visualisations ─────────────────
-            st.markdown("<div class='section-header' style='margin-top:1.2rem;'>📈 Optimization Curves</div>",
-                        unsafe_allow_html=True)
+            st.markdown(
+                "<div class='section-header' style='margin-top:1.2rem;'>Optimization Curves</div>",
+                unsafe_allow_html=True
+            )
 
             vc1, vc2 = st.columns(2)
             with vc1:
-                st.plotly_chart(profit_curve_chart(result, current_price),
-                                use_container_width=True, config={'displayModeBar': False})
+                st.plotly_chart(
+                    profit_curve_chart(result, current_price),
+                    use_container_width=True,
+                    config={'displayModeBar': False}
+                )
             with vc2:
-                st.plotly_chart(demand_curve_chart(result, current_price),
-                                use_container_width=True, config={'displayModeBar': False})
+                st.plotly_chart(
+                    demand_curve_chart(result, current_price),
+                    use_container_width=True,
+                    config={'displayModeBar': False}
+                )
 
-            st.plotly_chart(comparison_bar_chart(result, current_price),
-                            use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(
+                comparison_bar_chart(result, current_price),
+                use_container_width=True,
+                config={'displayModeBar': False}
+            )
 
-            # ── Section 6: AI Recommendation ─────────────
-            st.markdown("<div class='section-header'>🤖 AI Recommendation</div>", unsafe_allow_html=True)
+            # ── Section 6: Business Insights ─────────────
+            st.markdown(
+                "<div class='section-header' style='margin-top:1rem;'>Business Insights</div>",
+                unsafe_allow_html=True
+            )
 
-            st.markdown(f"""
-            <div class='ai-box'>
-                            <div class='ai-label'>🔮 PriceOracle AI Insights</div>
-              <div class='ai-text'>{ai_text}</div>
-            </div>""", unsafe_allow_html=True)
-
-            # ── Section 7: Business Insights ─────────────
-            st.markdown("<div class='section-header' style='margin-top:1rem;'>💡 Business Insights</div>",
-                        unsafe_allow_html=True)
-
-            # Compute insights
             elasticity_est = abs(
-                (result['optimal_demand'] - result['current_demand']) /
-                max(result['current_demand'], 0.1) /
-                ((result['optimal_price'] - current_price) / max(current_price, 1) + 1e-9)
+                (result['optimal_demand'] - result['current_demand'])
+                / max(result['current_demand'], 0.1)
+                / ((result['optimal_price'] - current_price) / max(current_price, 1) + 1e-9)
             )
             price_position = (
-                "💚 Below competitor — opportunity to raise price" if current_price < competitor_price * 0.95
-                else "🔴 Above competitor — risk of demand loss" if current_price > competitor_price * 1.05
+                "💚 Below competitor — opportunity to raise price"
+                if current_price < competitor_price * 0.95
+                else "🔴 Above competitor — risk of demand loss"
+                if current_price > competitor_price * 1.05
                 else "⚖️ At parity with competitor"
             )
             disc_note = (
                 f"📉 Your {discount_pct:.0f}% discount is aggressive — margin is squeezed"
-                if discount_pct > 30 else
-                f"✅ Discount of {discount_pct:.0f}% is balanced — good for conversion"
-                if discount_pct > 0 else
-                "🏷️ No discount applied — room to add tactical discount"
+                if discount_pct > 30
+                else f"✅ Discount of {discount_pct:.0f}% is balanced — good for conversion"
+                if discount_pct > 0
+                else "🏷️ No discount applied — room to add tactical discount"
             )
 
             pills = [
                 f"📊 Price elasticity ≈ {elasticity_est:.2f}",
                 price_position,
                 disc_note,
-                f"🗓️ {'Festive boost active +15% demand' if is_festive else 'Off-peak — monitor competitors closely'}",
-                f"🗺️ Region tier: {'Metro' if region in METRO_REGIONS else 'Tier 1' if region in TIER1_REGIONS else 'Tier 2/3'}",
-                f"💰 Gross margin at optimal: {((result['optimal_price'] - cost_price_input) / result['optimal_price'] * 100):.1f}%",
+                (
+                    "🗓️ Festive boost active +15% demand"
+                    if is_festive
+                    else "🗓️ Off-peak — monitor competitors closely"
+                ),
+                (
+                    f"🗺️ Region tier: {'Metro' if region in METRO_REGIONS else 'Tier 1' if region in TIER1_REGIONS else 'Tier 2/3'}"
+                ),
+                (
+                    f"💰 Gross margin at optimal: {((result['optimal_price'] - cost_price_input) / result['optimal_price'] * 100):.1f}%"
+                ),
             ]
             for pill in pills:
                 st.markdown(f"<span class='insight-pill'>{pill}</span>", unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════
-# TAB 2: SCENARIO LAB
+# TAB 2: AI INSIGHTS
+# ══════════════════════════════════════════════════════════
+with tab_ai:
+    st.subheader("AI Recommendation")
+    st.caption("Generate recommendation from the latest optimizer analysis.")
+
+    optimizer_state = st.session_state.get('optimizer_state')
+    if not optimizer_state:
+        st.info("Run Price Optimizer first to prepare analysis.")
+    else:
+        signature = optimizer_state['signature']
+        saved_ai_state = st.session_state.get('ai_state', {})
+
+        if saved_ai_state.get('signature') != signature:
+            st.info("New analysis available. Click Generate Recommendation.")
+
+        if st.button("Generate Recommendation", type="primary"):
+            with st.spinner("Generating recommendation..."):
+                ai_text = get_ai_recommendation(
+                    optimizer_state['ai_inputs'], optimizer_state['result'], groq_key
+                )
+            st.session_state['ai_state'] = {
+                'signature': signature,
+                'ai_text': ai_text
+            }
+
+        current_ai_state = st.session_state.get('ai_state', {})
+        if current_ai_state.get('ai_text'):
+            st.markdown(f"""
+            <div class='ai-box'>
+              <div class='ai-label'>PriceOracle Recommendation</div>
+              <div class='ai-text'>{current_ai_state['ai_text']}</div>
+            </div>""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════
+# TAB 3: SCENARIO LAB
 # ══════════════════════════════════════════════════════════
 with tab_scenario:
-    st.markdown("<div class='section-header'>🔬 Scenario Simulation — What If Analysis</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-header'>Scenario Simulation — What If Analysis</div>", unsafe_allow_html=True)
     st.markdown(
         "<div style='font-size:0.85rem; color:#8b949e; margin-bottom:1rem;'>"
         "Adjust competitor price and discount to see how optimal profit changes.</div>",
@@ -922,7 +965,7 @@ with tab_scenario:
         sc_comp_range = st.slider("Competitor Price Range (₹)", 300, 3000, (600, 1200), 50)
         sc_disc_range = st.slider("Discount Range (%)", 0, 60, (0, 40), 5)
 
-        sc_run = st.button("🔬 Run Scenario Analysis", use_container_width=True, type="primary")
+        sc_run = st.button("Run Scenario Analysis", use_container_width=True, type="primary")
 
     with sc2:
         sc_signature = (
@@ -941,10 +984,10 @@ with tab_scenario:
             # Heatmap
             comp_prices = np.linspace(sc_comp_range[0], sc_comp_range[1], 12)
             discounts   = np.linspace(sc_disc_range[0], sc_disc_range[1], 10)
-            z_matrix, opt_prices = [], []
+            z_matrix = []
 
             for disc in discounts:
-                row_profits, row_opts = [], []
+                row_profits = []
                 for cp in comp_prices:
                     f = sc_features.copy()
                     f['competitor_price'] = cp
@@ -954,11 +997,7 @@ with tab_scenario:
                     f['price_ratio']      = sc_price / max(cp, 1)
                     d = predict_demand(f)
                     row_profits.append(round((sc_price - sc_cost) * d, 1))
-                    # Quick optimal
-                    res = run_optimizer(f, sc_cost, sc_price, 0.70, 1.35, 30)
-                    row_opts.append(round(res['optimal_price'], 0))
                 z_matrix.append(row_profits)
-                opt_prices.append(row_opts)
 
             # Profit vs competitor price line
             mid_disc = (sc_disc_range[0] + sc_disc_range[1]) / 2
@@ -1031,15 +1070,11 @@ with tab_scenario:
 
 
 # ══════════════════════════════════════════════════════════
-# TAB 3: BATCH ANALYSIS
+# TAB 4: BATCH ANALYSIS
 # ══════════════════════════════════════════════════════════
 with tab_batch:
-    st.markdown("<div class='section-header'>📦 Batch Product Analysis</div>", unsafe_allow_html=True)
-    st.markdown(
-        "<div style='font-size:0.85rem; color:#8b949e; margin-bottom:1rem;'>"
-        "Upload or generate a product list to find optimal prices across your catalogue.</div>",
-        unsafe_allow_html=True
-    )
+    st.subheader("Batch Product Analysis")
+    st.caption("Generate a product list to find optimal prices across your catalog.")
 
     bt1, bt2 = st.columns([1, 2])
     with bt1:
@@ -1047,7 +1082,7 @@ with tab_batch:
         n_products = st.slider("Number of Products", 5, 50, 15)
         batch_cat  = st.multiselect("Categories", CATEGORIES, default=['Kurta', 'Set', 'Top'])
         batch_date = st.date_input("Analysis Date", value=date(2022, 10, 20), key='batch_date')
-        gen_btn    = st.button("⚡ Generate & Optimise", use_container_width=True, type="primary")
+        gen_btn    = st.button("Generate and Optimise", use_container_width=True, type="primary")
 
     with bt2:
         if gen_btn or 'batch_results_df' in st.session_state:
@@ -1145,42 +1180,38 @@ with tab_batch:
             )
 
             csv = bdf.to_csv(index=False)
-            st.download_button("📥 Download Results CSV", csv, "priceoracle_batch.csv", "text/csv")
+            st.download_button("Download Results CSV", csv, "priceoracle_batch.csv", "text/csv")
+        else:
+            st.info("Click 'Generate & Optimise' to run batch analysis and show charts/table.")
+            st.markdown(
+                "This section will display:\n"
+                "- Summary metrics\n"
+                "- Improvement chart\n"
+                "- Full product recommendation table"
+            )
 
 
 # ══════════════════════════════════════════════════════════
-# TAB 4: ABOUT
+# TAB 5: ABOUT
 # ══════════════════════════════════════════════════════════
 with tab_about:
-        st.markdown("<div class='section-header'>ℹ️ About PriceOracle</div>", unsafe_allow_html=True)
-        st.markdown(
-                "PriceOracle helps you test and optimise product prices by balancing demand and profitability. "
+        st.subheader("ℹ️ About PriceOracle")
+        st.write(
+                "PriceOracle helps you test and optimize product prices by balancing demand and profitability. "
                 "Use it for single product decisions, scenario testing, and batch pricing recommendations."
         )
 
-        a1, a2 = st.columns(2)
-        with a1:
-                st.markdown("""
-                <div class='metric-card' style='text-align:left;'>
-                    <div class='label'>What You Can Do</div>
-                    <div style='color:#c9d1d9; font-size:0.9rem; line-height:1.7;'>
-                        • Optimize one product price<br>
-                        • Run competitor/discount scenarios<br>
-                        • Compare current vs optimized profit
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-        with a2:
-                st.markdown("""
-                <div class='metric-card' style='text-align:left;'>
-                    <div class='label'>Batch Analysis</div>
-                    <div style='color:#c9d1d9; font-size:0.9rem; line-height:1.7;'>
-                        • Generate multi-product recommendations<br>
-                        • Export CSV results<br>
-                        • Prioritize high-uplift products
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+                st.markdown("**What You Can Do**")
+                st.markdown("- Optimize one product price")
+                st.markdown("- Run competitor and discount scenarios")
+                st.markdown("- Compare current vs optimized profit")
+        with c2:
+                st.markdown("**Batch Analysis**")
+                st.markdown("- Generate recommendations for many products")
+                st.markdown("- Export results to CSV")
+                st.markdown("- Prioritize high-uplift products")
 
-        st.markdown("<div class='section-header' style='margin-top:1rem;'>🚀 Quick Start</div>", unsafe_allow_html=True)
-        st.code("pip install -r requirements.txt\nstreamlit run priceoracle_app.py", language="bash")
+        st.markdown("**Usage**")
+        st.markdown("Use the tabs to optimize a product, run scenarios, and generate batch recommendations.")
