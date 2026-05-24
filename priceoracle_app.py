@@ -27,6 +27,28 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 load_dotenv(dotenv_path=os.path.join("PriceOptimizer", ".env"), override=False)
 
+
+def format_batch_results_table(df: pd.DataFrame):
+    formatter = {
+        'Current Price': '₹{:.0f}',
+        'Cost Price': '₹{:.0f}',
+        'Competitor ₹': '₹{:.0f}',
+        'Optimal Price': '₹{:.2f}',
+        'Price Change ₹': '₹{:.2f}',
+        'Change %': '{:.1f}%',
+        'Curr Profit': '₹{:.0f}',
+        'Opt Profit': '₹{:.0f}',
+        'Improvement %': '{:.1f}%',
+    }
+    styler = df.style.format(formatter)
+
+    try:
+        import matplotlib  # noqa: F401
+    except ImportError:
+        return styler
+
+    return styler.background_gradient(subset=['Improvement %'], cmap='RdYlGn')
+
 # ─────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────
@@ -1170,13 +1192,8 @@ with tab_batch:
 
             # Table
             st.dataframe(
-                bdf_sorted.style.background_gradient(subset=['Improvement %'], cmap='RdYlGn')
-                          .format({'Current Price': '₹{:.0f}', 'Cost Price': '₹{:.0f}',
-                                   'Competitor ₹': '₹{:.0f}', 'Optimal Price': '₹{:.2f}',
-                                   'Price Change ₹': '₹{:.2f}', 'Change %': '{:.1f}%',
-                                   'Curr Profit': '₹{:.0f}', 'Opt Profit': '₹{:.0f}',
-                                   'Improvement %': '{:.1f}%'}),
-                use_container_width=True, height=300
+                format_batch_results_table(bdf_sorted),
+                width=1600, height=300
             )
 
             csv = bdf.to_csv(index=False)
